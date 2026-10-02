@@ -1,0 +1,49 @@
+# Direct dependencies pinned from rkhafizov.namvis_container (Python 3.10.12).
+# PyTorch, torchvision, and FlashAttention are installed separately; see Dockerfile.
+easydict==1.13
+typed-argument-parser==1.12.0
+seaborn==0.13.2
+kornia==0.8.2
+gputil==1.4.0
+colorama==0.4.6
+omegaconf==2.3.1
+pandas==2.3.3
+timm==0.9.6
+decord==0.6.0
+transformers==5.16.1
+pytz==2026.3.post1
+numpy==1.26.4
+wandb==0.16.6
+imageio[ffmpeg]==2.37.4
+imageio-ffmpeg==0.6.0
+natsort==8.4.0
+scipy==1.15.3
+einops==0.8.2
+openai==3.7.0
+httpx==0.28.1
+opencv-python==4.10.0.84
+h5py==3.16.0
+trackio==0.2.2
+webdataset==1.0.2
+optuna-integration[pytorch_distributed]==4.9.0
+lpips==0.1.4
+gradio==5.49.1
+scikit-image==0.25.2
+websockets==15.0.1
+
+# Packages imported directly by the code, also pinned from the running container.
+huggingface-hub==1.30.0
+safetensors==0.8.0
+optuna==4.9.0
+pillow==11.3.0
+pyyaml==6.0.3
+tqdm==4.70.0
+matplotlib==3.10.9
+
+# Additional requirements for splatter-image.
+hydra-core==1.3.6
+lightning==2.5.5
+ema-pytorch==0.8.3
+
+# For diff-gaussian-rasterization:
+# python3 -m pip install . --no-build-isolation

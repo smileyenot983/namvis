@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.log
+
+weights/
+wandb/
+trackio_logs/
+checkpoints/
+
+inference_grid*
+inference_results*
+outputs*
+local_output*

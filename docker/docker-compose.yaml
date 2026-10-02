@@ -1,0 +1,30 @@
+
+services:
+  namvis:
+    image: rkhafizov.namvis_image
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:                
+        UID: ${UID}        
+        GID: ${GID}        
+
+    container_name: rkhafizov.namvis_container
+    network_mode: host
+    ipc: host
+    volumes:
+      - /home/r.khafizov/namvis:/workspace/namvis
+      - /mnt/data/r.khafizov:/workspace/data
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all  # Adjust GPU visibility as needed
+      - MASTER_ADDR=127.0.0.1            # single-node: use loopback for coordination
+      - MASTER_PORT=12345                # or any free port
+    command: ["sleep", "infinity"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+          - driver: nvidia
+            # count: 1
+            device_ids: ["1,2,3"]
+            capabilities: [gpu]
