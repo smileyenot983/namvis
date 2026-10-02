@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>NAMVIS: Next-Scale Autoregressive Multi-View Image Synthesis</title>
     <meta name="description" content="Project page for NAMVIS, a next-scale autoregressive framework for zero-shot multi-view novel view synthesis." />
-    <link rel="stylesheet" href="styles.css?v=58" />
+    <link rel="stylesheet" href="styles.css?v=59" />
   </head>
   <body>
     <header class="hero">
@@ -16,14 +16,32 @@
           <p class="authors">Ramil Khafizov<sup>1</sup>, Ilya Statsenko<sup>2</sup>, Ruslan Rakhimov<sup>2</sup>, Artem Komarichev<sup>1</sup>, Peter Wonka<sup>3</sup>, Evgeny Burnaev<sup>1,4</sup></p>
           <p class="affiliations"><sup>1</sup> Applied AI Institute · <sup>2</sup> T-Tech · <sup>3</sup> KAUST · <sup>4</sup> AXXX</p>
           <p class="venue">NeurIPS 2026</p>
-          <div class="hero-links">
-            <a class="template-button paper-button" href="https://openreview.net/forum?id=dTzafRJOTR" target="_blank" rel="noreferrer"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M7 3.75h7l4 4v12.5H7z"/><path d="M14 3.75v4h4M10 12h5m-5 3h5"/></svg><span>Paper</span></a>
-            <button class="template-button pending-button" type="button" disabled aria-label="arXiv link to be added"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 6.5h16v3H4zM5.5 9.5v10h13v-10M9 13h6"/></svg><span>arXiv</span></button>
-            <button class="template-button pending-button" type="button" disabled aria-label="Code link to be added"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m8.5 7-5 5 5 5m7-10 5 5-5 5m-3-12-2 14"/></svg><span>Code</span></button>
-            <a class="template-button dataset-button" href="https://huggingface.co/datasets/smileyenot983/objaversexl_sketchfab_pmap" target="_blank" rel="noopener noreferrer" aria-label="Dataset Part 1: ObjaverseXL Sketchfab dataset on Hugging Face" title="ObjaverseXL Sketchfab dataset"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M14 4h6v6m0-6-9 9"/><path d="M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6"/></svg><span>Dataset Part 1</span></a>
-            <a class="template-button dataset-button" href="https://huggingface.co/datasets/smileyenot983/objaversexl_github6.5_pmap" target="_blank" rel="noopener noreferrer" aria-label="Dataset Part 2: ObjaverseXL GitHub 6.5 dataset on Hugging Face" title="ObjaverseXL GitHub 6.5 dataset"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M14 4h6v6m0-6-9 9"/><path d="M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6"/></svg><span>Dataset Part 2</span></a>
-            <a class="template-button checkpoint-button" href="https://huggingface.co/smileyenot983/NAMVIS" target="_blank" rel="noopener noreferrer" aria-label="NAMVIS checkpoints on Hugging Face" title="NAMVIS model checkpoints"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M14 4h6v6m0-6-9 9"/><path d="M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6"/></svg><span>Checkpoints</span></a>
-          </div>
+          <nav class="hero-links" aria-label="Project resources">
+            <a class="template-button paper-button" href="https://openreview.net/forum?id=dTzafRJOTR" target="_blank" rel="noopener noreferrer">
+              <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M7 3.75h7l4 4v12.5H7z"/><path d="M14 3.75v4h4M10 12h5m-5 3h5"/></svg>
+              <span>Paper</span>
+            </a>
+            <button class="template-button pending-button" type="button" disabled aria-label="arXiv link coming soon">
+              <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 6.5h16v3H4zM5.5 9.5v10h13v-10M9 13h6"/></svg>
+              <span>arXiv</span><span class="button-note">Soon</span>
+            </button>
+            <a class="template-button code-button" href="https://github.com/smileyenot983/namvis" target="_blank" rel="noopener noreferrer" aria-label="NAMVIS code on GitHub">
+              <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m8.5 7-5 5 5 5m7-10 5 5-5 5m-3-12-2 14"/></svg>
+              <span>Code</span>
+            </a>
+            <a class="template-button dataset-button" href="https://huggingface.co/datasets/smileyenot983/objaversexl_sketchfab_pmap" target="_blank" rel="noopener noreferrer" aria-label="Dataset Part 1: ObjaverseXL Sketchfab dataset on Hugging Face" title="ObjaverseXL Sketchfab dataset">
+              <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3"/></svg>
+              <span>Dataset Part 1</span>
+            </a>
+            <a class="template-button dataset-button" href="https://huggingface.co/datasets/smileyenot983/objaversexl_github6.5_pmap" target="_blank" rel="noopener noreferrer" aria-label="Dataset Part 2: ObjaverseXL GitHub 6.5 dataset on Hugging Face" title="ObjaverseXL GitHub 6.5 dataset">
+              <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3"/></svg>
+              <span>Dataset Part 2</span>
+            </a>
+            <a class="template-button checkpoint-button" href="https://huggingface.co/smileyenot983/NAMVIS" target="_blank" rel="noopener noreferrer" aria-label="NAMVIS checkpoints on Hugging Face" title="NAMVIS model checkpoints">
+              <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3v12m-5-5 5 5 5-5M4 16v4h16v-4"/></svg>
+              <span>Checkpoints</span>
+            </a>
+          </nav>
         </div>
 
         <section class="hero-teaser" aria-label="Sparse input views and generated novel views">

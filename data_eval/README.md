@@ -32,7 +32,7 @@ Override the dataset, selection file, scene limit, or epoch frequency as needed:
 ```bash
 EVAL_DATA_PATH=/path/to/rendered_objaverse \
 EVAL_JSON=data_eval/eval_objaverse_small.json \
-EVAL_MAX_SCENES=100 EVAL_FREQ=1 bash train_src2sos_prope.sh
+EVAL_MAX_SCENES=100 EVAL_FREQ=1 bash train_namvis.sh
 ```
 
 `EVAL_MAX_SCENES` caps the selected scenes in JSON order. Evaluation runs before

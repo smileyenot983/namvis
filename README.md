@@ -4,7 +4,10 @@ Ramil Khafizov, Ilya Statsenko, Ruslan Rakhimov, Artem Komarichev,
 Peter Wonka, and Evgeny Burnaev.
 
 [Paper](https://openreview.net/forum?id=dTzafRJOTR) ·
-[Project page source](docs/index.html) ·
+[Project page](https://smileyenot983.github.io/namvis/) ·
+[Code](https://github.com/smileyenot983/namvis) ·
+[Dataset Part 1](https://huggingface.co/datasets/smileyenot983/objaversexl_sketchfab_pmap) ·
+[Dataset Part 2](https://huggingface.co/datasets/smileyenot983/objaversexl_github6.5_pmap) ·
 [Checkpoints](https://huggingface.co/smileyenot983/NAMVIS)
 
 NAMVIS generates novel views at unseen camera poses from sparse posed source
@@ -175,11 +178,11 @@ for the expected sample format.
 
 The project page links to training data on Hugging Face:
 
-- [ObjaverseXL Sketchfab](https://huggingface.co/datasets/smileyenot983/objaversexl_sketchfab_pmap)
-- [ObjaverseXL GitHub 6.5](https://huggingface.co/datasets/smileyenot983/objaversexl_github6.5_pmap)
+- [Dataset Part 1: ObjaverseXL Sketchfab](https://huggingface.co/datasets/smileyenot983/objaversexl_sketchfab_pmap)
+- [Dataset Part 2: ObjaverseXL GitHub 6.5](https://huggingface.co/datasets/smileyenot983/objaversexl_github6.5_pmap)
 
 Before launching, edit `data_path` in
-[train_src2sos_prope.sh](train_src2sos_prope.sh) to point to your training
+[train_namvis.sh](train_namvis.sh) to point to your training
 shards. It accepts comma-separated directories or shard paths. Update
 `--train_scenes` to the scene count for your training data, and adjust the
 batch size and worker settings for your hardware.
@@ -190,7 +193,7 @@ VAE_CKPT=weights/infinity_vae_d32reg.pth \
 RUSH_RESUME=weights/namvis_1b.pth \
 EVAL_DATA_PATH=data_eval/rendered_objaverse8_wdepth_pitch30 \
 EVAL_JSON=data_eval/eval_objaverse_small.json \
-  bash train_src2sos_prope.sh
+  bash train_namvis.sh
 ```
 
 This initializes transformer weights from the NAMVIS checkpoint with two
