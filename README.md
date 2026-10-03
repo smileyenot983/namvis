@@ -199,8 +199,26 @@ EVAL_JSON=data_eval/eval_objaverse_small.json \
 
 This initializes transformer weights from the NAMVIS checkpoint with two
 source views, three target views, image conditioning, and PRoPE enabled.
-Set `NPROC_PER_NODE` to the
-number of visible GPUs for single-node distributed training. To initialize
+Set `NPROC_PER_NODE` to the number of GPUs to use on each node. For multiple
+nodes, run the launcher on every node with the same `NNODES`, `MASTER_ADDR`,
+and `MASTER_PORT`, and a distinct `NODE_RANK` starting at zero. For example,
+with two nodes and two GPUs per node (replace `10.0.0.10` with node 0's
+address reachable from both nodes):
+
+```bash
+# Node 0
+NNODES=2 NODE_RANK=0 NPROC_PER_NODE=2 MASTER_ADDR=10.0.0.10 MASTER_PORT=6661 \
+  bash train_namvis.sh
+# Node 1
+NNODES=2 NODE_RANK=1 NPROC_PER_NODE=2 MASTER_ADDR=10.0.0.10 MASTER_PORT=6661 \
+  bash train_namvis.sh
+```
+
+Use the same code, run name, and training configuration on every node, with
+the required data and weights available at the configured paths. The launcher
+defaults to one node and one GPU; `SINGLE` is no longer used.
+
+To initialize
 without a pretrained NAMVIS transformer, change `--rush_resume` to an empty
 string in the launcher; the visual tokenizer checkpoint is still required.
 

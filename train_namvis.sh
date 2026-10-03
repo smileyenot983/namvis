@@ -5,9 +5,9 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${REPO_ROOT}"
 export PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 
-# Single-node training; use one worker for each selected GPU.
-nnodes=1
-node_rank=0
+# Use one worker per selected GPU; set NNODES and NODE_RANK for multiple nodes.
+nnodes="${NNODES:-1}"
+node_rank="${NODE_RANK:-0}"
 nproc_per_node="${NPROC_PER_NODE:-1}"
 master_addr="${MASTER_ADDR:-127.0.0.1}"
 master_port="${MASTER_PORT:-6661}"
@@ -54,11 +54,11 @@ echo "Shell: CUDA_DEVICE_ORDER='${CUDA_DEVICE_ORDER:-<unset>}'"
 nvidia-smi --query-gpu=index,name,uuid,memory.total --format=csv
 
 torchrun \
---nproc_per_node=${nproc_per_node} \
---nnodes=${nnodes} \
---node_rank=${node_rank} \
---master_addr=${master_addr} \
---master_port=${master_port} \
+--nproc_per_node="${nproc_per_node}" \
+--nnodes="${nnodes}" \
+--node_rank="${node_rank}" \
+--master_addr="${master_addr}" \
+--master_port="${master_port}" \
 train.py \
 --ep=10000 \
 --opt=adamw \
