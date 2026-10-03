@@ -1,5 +1,4 @@
 import gc
-import argparse
 import json
 import math
 import os
@@ -10,8 +9,7 @@ import traceback
 from collections import deque
 from contextlib import nullcontext
 from functools import partial
-from distutils.util import strtobool
-from typing import List, Optional, Tuple
+from typing import List
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import numpy as np
@@ -24,35 +22,31 @@ import torch.distributed as tdist
 import torchvision
 
 import infinity.utils.dist as dist
-from infinity.dataset.build import build_t2i_dataset, build_multiview_dataset
 from infinity.utils.save_and_load import CKPTSaver, auto_resume
 from infinity.utils import arg_util, misc, wandb_utils
 
-from infinity.utils.dynamic_resolution import dynamic_resolution_h_w
-
+from infinity.utils.rays import plucker_rays_paired
 from infinity.utils.dynamic_resolution import dynamic_resolution_h_w, h_div_w_templates
-from infinity.utils.rays import plucker_rays_batched, plucker_rays_seva, plucker_rays_paired
 from infinity.utils.metrics import calc_2D_metrics
 from PIL import Image
 
-import cv2
 import trackio
-from infinity.dataset.dataset_multiview_iterable import MultiviewTestDataset
 import glob
 
-# from peft import LoraConfig, get_peft_model, PeftModel, prepare_model_for_kbit_training
-import torch.nn as nn
-import optuna
-from optuna.integration import TorchDistributedTrial
 
 import webdataset as wds
 
 from infinity.dataset.webdataset_utils import process_multiview_rgb, collate_multiview_rgb
 
-enable_timeline_sdk = False
-
 
 def build_everything_from_args(args: arg_util.Args, saver):
+    if not os.path.isfile(args.vae_ckpt):
+        raise FileNotFoundError(
+            f"Visual tokenizer checkpoint not found: {args.vae_ckpt!r}. "
+            "Download infinity_vae_d32reg.pth as described in README.md "
+            "and set --vae_ckpt to its path."
+        )
+
     # set seed
     args.set_initial_seed(benchmark=True)
     if args.seed is not None and not args.rand: # check the randomness
@@ -70,10 +64,7 @@ def build_everything_from_args(args: arg_util.Args, saver):
 
     # load VAE
     print(f'Load vae form {args.vae_ckpt}')
-    if not os.path.exists(args.vae_ckpt):
-        vae_ckpt = {}
-    else:
-        vae_ckpt = torch.load(args.vae_ckpt, map_location='cpu')
+    vae_ckpt = torch.load(args.vae_ckpt, map_location='cpu')
 
     # Build the RGB VAE and image-conditioned autoregressive model.
     text_tokenizer, text_encoder, vae_local, gpt_uncompiled, gpt_wo_ddp, gpt_ddp, gpt_wo_ddp_ema, gpt_ddp_ema, gpt_optim = build_model_optimizer(args, vae_ckpt)
@@ -255,46 +246,6 @@ def build_model_optimizer(args, vae_rgb_ckpt):
     )]) + '\n\n')
     
 
-    # get all layers with sa/ca/ffn(basically all layers)
-    # target_linear_names = []
-    # for name, m in gpt_wo_ddp.named_modules():
-    #     if isinstance(m, nn.Linear):
-    #         if any(k in name.lower() for k in ["sa", "ca", "ffn"]):
-    #             target_linear_names.append(name)
-
-    # scratch_modules = ["img_proj_for_sos", "img_proj_for_ca", "img_norm", "cfg_uncond", "word_embed"]
-
-    # pretrained_modules = [
-    #     name for name in target_linear_names 
-    #     if "img_proj_for_sos" not in name 
-    #     and "img_proj_for_ca" not in name 
-    # ]
-
-    # print(f"gpt_wo_ddp.named_modules(): {gpt_wo_ddp.named_modules()}")
-    # print(f"target_linear_names: {target_linear_names}")
-
-    # rank=256
-    # alpha=2*rank
-    # dropout=0.05
-    # lora_cfg = LoraConfig(
-    #     r=rank,
-    #     lora_alpha=alpha,
-    #     lora_dropout=dropout,
-    #     bias="none",
-    #     target_modules=pretrained_modules,
-    #     modules_to_save=scratch_modules,
-    #     task_type=None,               
-    #     )
-    # gpt_wo_ddp = get_peft_model(gpt_wo_ddp, lora_cfg)
-    # gpt_wo_ddp.print_trainable_parameters()
-
-
-    # print("--- PARAMETER TRAINABILITY STATUS ---")
-    # for name, param in gpt_wo_ddp.named_parameters():
-    #     # I like to format this so the trainable parameters stand out
-    #     status = "🟢 TRAINABLE" if param.requires_grad else "🔴 FROZEN"
-    #     print(f"{status} | {name} | Shape: {param.shape}")
-
     gpt_uncompiled = gpt_wo_ddp
     gpt_wo_ddp = args.compile_model(gpt_wo_ddp, args.tfast)
 
@@ -417,6 +368,9 @@ def flatten_tasks(iterator):
             yield item
 
 def build_dataloaders(args):
+    if args.workers < 1:
+        raise ValueError('--workers must be at least 1 for WebDataset training')
+
     print(f"args.data_load_reso: {args.data_load_reso}")
     print(f"args.multiview: {args.multiview}")
 
@@ -915,150 +869,6 @@ def run_training_evaluation(
     trainer.gpt.train(model_was_training)
     return evaluation_metrics
 
-import csv
-class CSVLoggingCallback:
-    def __init__(self, filepath="optuna_live_results.csv"):
-        self.filepath = filepath
-        # If the file doesn't exist yet, create it and write the header row
-        if not os.path.exists(self.filepath):
-            with open(self.filepath, mode='w', newline='') as f:
-                writer = csv.writer(f)
-                writer.writerow(["Trial", "State", "Accuracy", "Hyperparameters"])
-
-    def __call__(self, study: optuna.study.Study, trial: optuna.trial.FrozenTrial):
-        # This function is triggered automatically at the end of every trial
-        with open(self.filepath, mode='a', newline='') as f:
-            writer = csv.writer(f)
-            
-            # Format the accuracy (or write "NaN/Pruned" if it failed early)
-            if trial.value is not None:
-                acc_str = f"{trial.value:.4f}"
-            else:
-                acc_str = "NaN / Pruned"
-                
-            writer.writerow([
-                trial.number,
-                trial.state.name,
-                acc_str,
-                str(trial.params) # Writes the exact dictionary of parameters
-            ])
-
-def run_optuna_sweep(args):
-    import copy
-
-    args.ep = 15
-    # 1. Define the objective function that wraps your entire training logic
-    def objective(trial):
-        torch._dynamo.reset()
-        # Initialize Optuna's Distributed wrapper. 
-        # Rank 0 gets the real 'trial', other ranks get 'None'.
-        dist_trial = TorchDistributedTrial(trial)
-        # args = copy.deepcopy(args)
-
-        # 2. Suggest hyperparameters and OVERRIDE your args dynamically
-        args.tblr = dist_trial.suggest_float("tblr", 6e-5, 6e-1, log=True)
-        args.wp = dist_trial.suggest_float("wp", 1, 5, log=True)
-        args.wpe = dist_trial.suggest_float("wpe", 0.01, 1, log=True)
-        args.twd = dist_trial.suggest_float("twd", 0.005, 0.05, log=True)
-
-        # trial_args.twd = dist_trial.suggest_float("twd", 1e-4, 1e-1, log=True)
-        # You can add more here! e.g., args.wp = dist_trial.suggest_float("wp", 0.01, 0.2)
-
-        saver = CKPTSaver(dist.is_master(), eval_milestone=None)
-        ret = build_everything_from_args(args, saver)
-
-        logging_params_milestone: List[int] = np.linspace(1, args.ep, 10+1, dtype=int).tolist()
-
-        if ret is None:
-            return
-        (
-            text_tokenizer, text_encoder, trainer,
-            start_ep, start_it, acc_str, eval_milestone,
-            iters_train, ld_train, ld_val
-        ) = ret
-
-
-        acc_mean = 0.0
-        # 3. Your exact existing training loop
-        for ep in range(start_ep, args.ep):
-            
-            if args.use_streaming_dataset:
-                ld_train.dataset.set_epoch(ep)
-
-            # [train one epoch]
-            stats, (sec, remain_time, finish_time) = train_one_ep(
-                ep=ep,
-                is_first_ep=ep == start_ep,
-                start_it=start_it if ep == start_ep else 0,
-                me=None,
-                saver=saver,
-                args=args,
-                ld_or_itrt=iter(ld_train),
-                iters_train=iters_train,
-                text_tokenizer=text_tokenizer, text_encoder=text_encoder,
-                trainer=trainer,
-                logging_params_milestone=logging_params_milestone,
-                enable_timeline_sdk=enable_timeline_sdk,
-            )
-
-            # Extract your already-synced accuracy
-            acc_mean = stats['Accm']
-
-            if math.isnan(stats['Lm']):
-                if dist.is_master():
-                    print(f"Trial {trial.number} exploded with NaN Loss. Pruning...")
-                del trainer, ld_train, ld_val
-                torch.cuda.empty_cache()
-                gc.collect()
-                raise optuna.exceptions.TrialPruned()
-
-            dist_trial.report(acc_mean, ep)
-            if dist_trial.should_prune():
-                del trainer, ld_train, ld_val
-                torch.cuda.empty_cache()
-                gc.collect()
-                raise optuna.exceptions.TrialPruned()
-                        
-        # final cleanup
-        del trainer, ld_train, ld_val
-        torch.cuda.empty_cache()
-        gc.collect()
-
-        # 6. Return the final metric you want Optuna to maximize (or minimize)
-        return acc_mean
-
-    n_trials = 30
-    
-    if dist.get_rank() == 0:
-
-        pruner = optuna.pruners.HyperbandPruner(min_resource=4, max_resource=args.ep)
-        sampler = optuna.samplers.TPESampler(n_startup_trials=7)
-
-        # Rank 0 creates the study and dictates the hyperparameter search
-        study = optuna.create_study(
-            direction="maximize", 
-            study_name="infinity3d_sweep",
-            storage="sqlite:///infinity3d_sweep.db",
-            load_if_exists=True,
-            pruner=pruner,
-            sampler=sampler
-        )
-        csv_logger = CSVLoggingCallback("optuna_live_results.csv")
-
-        study.optimize(objective, n_trials=n_trials, callbacks=[csv_logger])
-        print("\n" + "="*40)
-        print(f"🎉 SWEEP COMPLETE 🎉")
-        print(f"Best Trial: #{study.best_trial.number}")
-        print(f"Best Accuracy: {study.best_trial.value:.4f}")
-        print(f"Best Params: {study.best_trial.params}")
-        print("="*40 + "\n")
-    else:
-        # Other ranks just loop and wait for hyperparameters from Rank 0
-        for _ in range(n_trials):
-            try:
-                objective(None)
-            except optuna.exceptions.TrialPruned:
-                pass
 
 def main_train(args: arg_util.Args):
     if args.eval_freq <= 0:
@@ -1071,11 +881,8 @@ def main_train(args: arg_util.Args):
             "immediately after a completed optimizer update"
         )
     saver = CKPTSaver(dist.is_master(), eval_milestone=None)
-    
-    
-    # run_optuna_sweep(args)
-    # exit()
-    
+
+
     ret = build_everything_from_args(args, saver)
 
     if ret is None:
@@ -1087,18 +894,10 @@ def main_train(args: arg_util.Args):
     ) = ret
     gc.collect(), torch.cuda.empty_cache()
     
-    # import heavy packages after Dataloader object creation
-    from trainer import InfinityTrainer
-    ret: Tuple[
-        misc.TensorboardLogger, T5TokenizerFast, T5EncoderModel, InfinityTrainer,
-        int, int, str, List[Tuple[float, float]], Optional[int], Optional[DataLoader], DataLoader,
-    ]
 
-    # world_size = int(os.environ["WORLD_SIZE"])
     start_time, min_L_mean, min_L_tail, max_acc_mean, max_acc_tail = time.time(), 999., 999., -1., -1.
     seg5 = np.linspace(1, args.ep, 5+1, dtype=int).tolist()
     logging_params_milestone: List[int] = np.linspace(1, args.ep, 10+1, dtype=int).tolist()
-    milestone_ep_feishu_log = set(seg5[:])
     vis_milestone_ep = set(seg5[:]) | set(x for x in (2, 4, 8, 16) if x <= args.ep)
     for x in [6, 12, 3, 24, 18, 48, 72, 96]:
         if len(vis_milestone_ep) < 10 and x <= args.ep:
@@ -1145,26 +944,6 @@ def main_train(args: arg_util.Args):
             print("No logger chosen")
         
     
-    # print(f"args.data_path: {args.data_path}")
-    # print(f"args.eval_path: {args.eval_path}")
-    # hdf5_path = glob.glob(os.path.join(args.eval_path, "*.hdf5"))[0]
-
-    # dataset_eval = MultiviewTestDataset(meta_folder=os.path.join(args.eval_path, "eval"),
-    #                                        hdf5_path=hdf5_path,
-    #                                     #    N_views_src=args.N_views_src,
-    #                                     #    N_views_tgt=args.N_views_tgt,
-    #                                        pn=args.pn)
-                            
-    # dataset_test = MultiviewTestDataset(meta_folder=os.path.join(args.eval_path, "test"),
-    #                                        hdf5_path=hdf5_path,
-    #                                     #    N_views_src=args.N_views_src,
-    #                                     #    N_views_tgt=args.N_views_tgt,
-    #                                        pn=args.pn)
-
-    # datasets_eval = [dataset_eval]
-    # datasets_test = [dataset_test]
-
-
     if dist.is_master() and ld_eval is not None: # Only run on rank 0
         print("\n--- RUNNING DATALOADER SANITY CHECK ---")
         try:
@@ -1240,7 +1019,6 @@ def main_train(args: arg_util.Args):
             text_tokenizer=text_tokenizer, text_encoder=text_encoder,
             trainer=trainer,
             logging_params_milestone=logging_params_milestone,
-            enable_timeline_sdk=enable_timeline_sdk,
             eval_callback=partial(
                 run_training_evaluation,
                 args=args,
@@ -1334,7 +1112,7 @@ g_speed_ls = deque(maxlen=128)
 def train_one_ep(
     ep: int, is_first_ep: bool, start_it: int, me: misc.MetricLogger,
     saver: CKPTSaver, args: arg_util.Args, ld_or_itrt, iters_train: int, 
-    text_tokenizer: T5TokenizerFast, text_encoder: T5EncoderModel, trainer, logging_params_milestone, enable_timeline_sdk: bool,
+    text_tokenizer: T5TokenizerFast, text_encoder: T5EncoderModel, trainer, logging_params_milestone,
     eval_callback=None,
 ):
     # IMPORTANT: import heavy packages after the Dataloader object creation/iteration to avoid OOM
@@ -1345,197 +1123,192 @@ def train_one_ep(
     step_cnt = 0
     header = f'[Ep]: [{ep:4d}/{args.ep}]'
     
-    with misc.Low_GPU_usage(files=[args.log_txt_path], sleep_secs=20, verbose=True) as telling_dont_kill:
-        last_touch = time.time()
-        g_it, max_it = ep * iters_train, args.ep * iters_train
+    last_touch = time.time()
+    g_it, max_it = ep * iters_train, args.ep * iters_train
+
+    doing_profiling = args.prof and ep == 0 and (args.profall or dist.is_master())
+    maybe_record_function = record_function if doing_profiling else nullcontext
+    trainer.gpt_wo_ddp.maybe_record_function = maybe_record_function
+
+    last_t_perf = time.time()
+    speed_ls: deque = g_speed_ls
+    FREQ = max(min(args.prof_freq, iters_train//2-1),1)
+
+    me = misc.MetricLogger()
+    [me.add_meter(x, misc.SmoothedValue(window_size=1, fmt='{value:.2g}')) for x in ['tlr']]
+    [me.add_meter(x, misc.SmoothedValue(window_size=1, fmt='{median:.2f} ({global_avg:.2f})')) for x in ['tnm']]
+    [me.add_meter(x, misc.SmoothedValue(window_size=1, fmt='{median:.3f} ({global_avg:.3f})')) for x in ['Lm', 'Lt']]
+    [me.add_meter(x, misc.SmoothedValue(window_size=1, fmt='{median:.2f} ({global_avg:.2f})')) for x in ['Accm', 'Acct']]
+    me.add_meter('skips', misc.SmoothedValue(window_size=iters_train, fmt='{global_avg:.0f}')) # Shows total skips per epoch
+    # ============================================= iteration loop begins =============================================
+    for it, data in me.log_every(start_it, iters_train, ld_or_itrt, args.log_freq, args.log_every_iter, header):
+        g_it = ep * iters_train + it
+
+
+        if (it+1) % FREQ == 0:
+            speed_ls.append((time.time() - last_t_perf) / FREQ)
+            last_t_perf = time.time()
+
         
-        doing_profiling = args.prof and ep == 0 and (args.profall or dist.is_master())
-        maybe_record_function = record_function if doing_profiling else nullcontext
-        trainer.gpt_wo_ddp.maybe_record_function = maybe_record_function
-        
-        last_t_perf = time.time()
-        speed_ls: deque = g_speed_ls
-        FREQ = max(min(args.prof_freq, iters_train//2-1),1)
-        NVIDIA_IT_PLUS_1 = set(FREQ*i for i in (1, 2, 3, 4, 6, 8))
-        ranges = set([2 ** i for i in range(20)])
-        if ep <= 1: ranges |= {1, 2, 3, 4, 6, 8, 10, 12, 16, 20, 24, 32, 40}
-        PRINTABLE_IT_PLUS_1 = set(FREQ*i for i in ranges)
+        with maybe_record_function('before_train'):
+            # [get data]
 
-        me = misc.MetricLogger()
-        [me.add_meter(x, misc.SmoothedValue(window_size=1, fmt='{value:.2g}')) for x in ['tlr']]
-        [me.add_meter(x, misc.SmoothedValue(window_size=1, fmt='{median:.2f} ({global_avg:.2f})')) for x in ['tnm']]
-        [me.add_meter(x, misc.SmoothedValue(window_size=1, fmt='{median:.3f} ({global_avg:.3f})')) for x in ['Lm', 'Lt']]
-        [me.add_meter(x, misc.SmoothedValue(window_size=1, fmt='{median:.2f} ({global_avg:.2f})')) for x in ['Accm', 'Acct']]
-        me.add_meter('skips', misc.SmoothedValue(window_size=iters_train, fmt='{global_avg:.0f}')) # Shows total skips per epoch
-        # ============================================= iteration loop begins =============================================
-        for it, data in me.log_every(start_it, iters_train, ld_or_itrt, args.log_freq, args.log_every_iter, header):
-            g_it = ep * iters_train + it
+            images_src, captions_src, poses_src, intrs_src, images_tgt, captions_tgt, poses_tgt, intrs_tgt = data
 
 
-            # calling inc_step to sync the global_step
-            if enable_timeline_sdk:
-                ndtimeline.inc_step()
+            images_src = images_src.to(args.device)
+            images_tgt = images_tgt.to(args.device)
 
-            if (it+1) % FREQ == 0:
-                speed_ls.append((time.time() - last_t_perf) / FREQ)
-                last_t_perf = time.time()
+            poses_src = poses_src.to(args.device)
+            poses_tgt = poses_tgt.to(args.device)
 
-                if enable_timeline_sdk:
-                    ndtimeline.flush()
+            intrs_src = intrs_src.to(args.device)
+            intrs_tgt = intrs_tgt.to(args.device)
+                
+
+            # input_ids = tokens.input_ids.cuda(non_blocking=True)
+            # mask = tokens.attention_mask.cuda(non_blocking=True)
+            # text_features = text_encoder(input_ids=input_ids, attention_mask=mask)['last_hidden_state'].float()
             
-            if (g_it+1) % args.save_model_iters_freq == 0:
-                with misc.Low_GPU_usage(files=[args.log_txt_path], sleep_secs=3, verbose=True):
-                    saver.sav(args=args, g_it=(g_it+1), next_ep=ep, next_it=it+1, trainer=trainer, acc_str=f'[todo]', eval_milestone=None, also_save_to=None, best_save_to=None)
+            # lens: List[int] = mask.sum(dim=-1).tolist()
+            # cu_seqlens_k = F.pad(mask.sum(dim=-1).to(dtype=torch.int32).cumsum_(0), (1, 0))
+            # Ltext = max(lens)
             
-            with maybe_record_function('before_train'):
-                # [get data]
+            # kv_compact = []
+            # for len_i, feat_i in zip(lens, text_features.unbind(0)):
+            #     kv_compact.append(feat_i[:len_i])
+            # kv_compact = torch.cat(kv_compact, dim=0)
+            # # print(f"[real] kv_compact.shape: {kv_compact.shape}")
+            # # print(f"[real] cu_seqlens_k: {cu_seqlens_k}")
+            # text_cond_tuple: Tuple[torch.FloatTensor, List[int], torch.LongTensor, int] = (kv_compact, lens, cu_seqlens_k, Ltext)
 
-                images_src, captions_src, poses_src, intrs_src, images_tgt, captions_tgt, poses_tgt, intrs_tgt = data
-                    
-    
-                images_src = images_src.to(args.device)
-                images_tgt = images_tgt.to(args.device)
+            text_cond_tuple = None
 
-                poses_src = poses_src.to(args.device)
-                poses_tgt = poses_tgt.to(args.device)
+            # inp = inp.to(args.device, non_blocking=True)
 
-                intrs_src = intrs_src.to(args.device)
-                intrs_tgt = intrs_tgt.to(args.device)
-                    
-                captions_src_nonrepeat = [caption_batch[0] for caption_batch in captions_src]
-                captions_tgt_nonrepeat = [caption_batch[0] for caption_batch in captions_tgt]
+            # [logging]
+            args.cur_it = f'{it+1}/{iters_train}'
+            args.last_wei_g = me.meters['tnm'].median
+            if dist.is_local_master() and (it >= start_it + 10) and (time.time() - last_touch > 90):
+                _, args.remain_time, args.finish_time = me.iter_time.time_preds(max_it - g_it + (args.ep - ep) * 15)      # +15: other cost
+                args.dump_log()
+                last_touch = time.time()
 
-                # input_ids = tokens.input_ids.cuda(non_blocking=True)
-                # mask = tokens.attention_mask.cuda(non_blocking=True)
-                # text_features = text_encoder(input_ids=input_ids, attention_mask=mask)['last_hidden_state'].float()
-                
-                # lens: List[int] = mask.sum(dim=-1).tolist()
-                # cu_seqlens_k = F.pad(mask.sum(dim=-1).to(dtype=torch.int32).cumsum_(0), (1, 0))
-                # Ltext = max(lens)
-                
-                # kv_compact = []
-                # for len_i, feat_i in zip(lens, text_features.unbind(0)):
-                #     kv_compact.append(feat_i[:len_i])
-                # kv_compact = torch.cat(kv_compact, dim=0)
-                # # print(f"[real] kv_compact.shape: {kv_compact.shape}")
-                # # print(f"[real] cu_seqlens_k: {cu_seqlens_k}")
-                # text_cond_tuple: Tuple[torch.FloatTensor, List[int], torch.LongTensor, int] = (kv_compact, lens, cu_seqlens_k, Ltext)
+            # [schedule learning rate]
+            wp_it = args.wp * iters_train
+            min_tlr, max_tlr, min_twd, max_twd = lr_wd_annealing(args.sche, trainer.gpt_opt.optimizer, args.tlr, args.twd, args.twde, g_it, wp_it, max_it, wp0=args.wp0, wpe=args.wpe)
 
-                text_cond_tuple = None
+            # print(f"args.freeze_steps: {args.freeze_steps}")
+            # print(f"args.ramp_steps: {args.ramp_steps}")
+            # print(f"g_it: {g_it}")
 
-                # inp = inp.to(args.device, non_blocking=True)
-                if it > start_it + 10:
-                    telling_dont_kill.early_stop()
-                
-                # [logging]
-                args.cur_it = f'{it+1}/{iters_train}'
-                args.last_wei_g = me.meters['tnm'].median
-                if dist.is_local_master() and (it >= start_it + 10) and (time.time() - last_touch > 90):
-                    _, args.remain_time, args.finish_time = me.iter_time.time_preds(max_it - g_it + (args.ep - ep) * 15)      # +15: other cost
-                    args.dump_log()
-                    last_touch = time.time()
-                
-                # [schedule learning rate]
-                wp_it = args.wp * iters_train
-                min_tlr, max_tlr, min_twd, max_twd = lr_wd_annealing(args.sche, trainer.gpt_opt.optimizer, args.tlr, args.twd, args.twde, g_it, wp_it, max_it, wp0=args.wp0, wpe=args.wpe)
-                
-                # print(f"args.freeze_steps: {args.freeze_steps}")
-                # print(f"args.ramp_steps: {args.ramp_steps}")
-                # print(f"g_it: {g_it}")
+            # --- CONDITIONAL FREEZE & RAMP-UP LOGIC ---
+            if args.freeze_steps > 0:
+                freeze_steps = args.freeze_steps
+                ramp_steps = args.ramp_steps  # You can also make this an argument
 
-                # --- CONDITIONAL FREEZE & RAMP-UP LOGIC ---
-                if args.freeze_steps > 0:
-                    freeze_steps = args.freeze_steps
-                    ramp_steps = args.ramp_steps  # You can also make this an argument
-                    
-                    for group in trainer.gpt_opt.optimizer.param_groups:
-                        if group.get('is_backbone', False):
-                            if g_it < freeze_steps:
-                                group['lr'] = 0.0  # Phase 1: Frozen
-                                # print(f'g_it: {g_it} | current_multiplier: 0')
-                            elif g_it < (freeze_steps + ramp_steps):
-                                progress = (g_it - freeze_steps) / ramp_steps
-                                # Phase 2: Ramp-up from 1% to 100%
-                                start_multiplier = 0.01
-                                end_multiplier = 1.0
-                                current_multiplier = start_multiplier + progress * (end_multiplier - start_multiplier)
-                                # print(f'g_it: {g_it} | current_multiplier: {current_multiplier}')
-                                group['lr'] = group['lr'] * current_multiplier
+                for group in trainer.gpt_opt.optimizer.param_groups:
+                    if group.get('is_backbone', False):
+                        if g_it < freeze_steps:
+                            group['lr'] = 0.0  # Phase 1: Frozen
+                            # print(f'g_it: {g_it} | current_multiplier: 0')
+                        elif g_it < (freeze_steps + ramp_steps):
+                            progress = (g_it - freeze_steps) / ramp_steps
+                            # Phase 2: Ramp-up from 1% to 100%
+                            start_multiplier = 0.01
+                            end_multiplier = 1.0
+                            current_multiplier = start_multiplier + progress * (end_multiplier - start_multiplier)
+                            # print(f'g_it: {g_it} | current_multiplier: {current_multiplier}')
+                            group['lr'] = group['lr'] * current_multiplier
 
-                                # exit()
 
-                # [get scheduled hyperparameters]
-                progress = g_it / (max_it - 1)
-                clip_decay_ratio = (0.3 ** (20 * progress) + 0.2) if args.cdec else 1
-                
-                stepping = (g_it + 1) % args.ac == 0
-                step_cnt += int(stepping)
-            
-            # torch.cuda.synchronize()
-            # torch.cuda.reset_peak_memory_stats()
+            # [get scheduled hyperparameters]
+            progress = g_it / (max_it - 1)
+            clip_decay_ratio = (0.3 ** (20 * progress) + 0.2) if args.cdec else 1
 
-            # bench_start = torch.cuda.Event(enable_timing=True)
-            # bench_end = torch.cuda.Event(enable_timing=True)
-            # bench_start.record()
+            stepping = (g_it + 1) % args.ac == 0
+            step_cnt += int(stepping)
 
-            with maybe_record_function('in_training'):
-                grad_norm_t, scale_log2_t, num_skips = trainer.train_step(
-                    ep=ep, it=it, g_it=g_it, stepping=stepping, clip_decay_ratio=clip_decay_ratio,
-                    metric_lg=me, 
-                    logging_params=stepping and step_cnt == 1 and (ep < 4 or ep in logging_params_milestone),
-                    text_cond_tuple=text_cond_tuple,
-                    images_src=images_src,
-                    images_tgt=images_tgt,
-                    poses_src=poses_src,
-                    poses_tgt=poses_tgt,
-                    intrs_src=intrs_src,
-                    intrs_tgt=intrs_tgt,
-                    args=args,
-                )
-            
-            # bench_end.record()
-            # bench_end.synchronize()
-            # bench_events.append((bench_start, bench_end))
+        # torch.cuda.synchronize()
+        # torch.cuda.reset_peak_memory_stats()
 
-            # peak_allocated = torch.cuda.max_memory_allocated() / 1024**3
-            # peak_reserved = torch.cuda.max_memory_reserved() / 1024**3
-            # time_ms = bench_start.elapsed_time(bench_end)
+        # bench_start = torch.cuda.Event(enable_timing=True)
+        # bench_end = torch.cuda.Event(enable_timing=True)
+        # bench_start.record()
 
-            # print(f"peak_allocated: {peak_allocated} | peak_reserved: {peak_reserved} | time_ms: {time_ms}")
-
-            with maybe_record_function('after_train'):
-                # me.update(tlr=max_tlr)
-                me.update(tlr=max_tlr, skips=num_skips)
-
-            evaluation_due = (
-                eval_callback is not None
-                and args.eval_iters_freq > 0
-                and stepping
-                and (g_it + 1) % args.eval_iters_freq == 0
+        with maybe_record_function('in_training'):
+            grad_norm_t, scale_log2_t, num_skips = trainer.train_step(
+                ep=ep, it=it, g_it=g_it, stepping=stepping, clip_decay_ratio=clip_decay_ratio,
+                metric_lg=me,
+                logging_params=stepping and step_cnt == 1 and (ep < 4 or ep in logging_params_milestone),
+                text_cond_tuple=text_cond_tuple,
+                images_src=images_src,
+                images_tgt=images_tgt,
+                poses_src=poses_src,
+                poses_tgt=poses_tgt,
+                intrs_src=intrs_src,
+                intrs_tgt=intrs_tgt,
+                args=args,
             )
-            next_epoch_will_evaluate_same_weights = (
-                it + 1 == iters_train
-                and ep + 1 < args.ep
-                and (ep + 1) % args.eval_freq == 0
+
+        completed_iteration = g_it + 1
+        # Defer an interval that falls inside gradient accumulation until the
+        # next optimizer update, so checkpoints never lose pending gradients.
+        checkpoint_due = (
+            stepping
+            and completed_iteration // args.save_model_iters_freq
+            > (completed_iteration - args.ac) // args.save_model_iters_freq
+        )
+        if checkpoint_due:
+            epoch_finished = it + 1 == iters_train
+            saver.sav(
+                args=args, g_it=completed_iteration,
+                next_ep=ep + 1 if epoch_finished else ep,
+                next_it=0 if epoch_finished else it + 1,
+                trainer=trainer,
             )
-            if evaluation_due and not next_epoch_will_evaluate_same_weights:
-                completed_iteration = g_it + 1
-                eval_callback(
-                    ep=ep,
-                    global_iteration=completed_iteration,
-                    evaluation_tag=(
-                        f"ep{ep:04d}-it{it + 1:06d}-g{completed_iteration:09d}"
-                    ),
-                )
+
+        # bench_end.record()
+        # bench_end.synchronize()
+        # bench_events.append((bench_start, bench_end))
+
+        # peak_allocated = torch.cuda.max_memory_allocated() / 1024**3
+        # peak_reserved = torch.cuda.max_memory_reserved() / 1024**3
+        # time_ms = bench_start.elapsed_time(bench_end)
+
+        # print(f"peak_allocated: {peak_allocated} | peak_reserved: {peak_reserved} | time_ms: {time_ms}")
+
+        with maybe_record_function('after_train'):
+            # me.update(tlr=max_tlr)
+            me.update(tlr=max_tlr, skips=num_skips)
+
+        evaluation_due = (
+            eval_callback is not None
+            and args.eval_iters_freq > 0
+            and stepping
+            and (g_it + 1) % args.eval_iters_freq == 0
+        )
+        next_epoch_will_evaluate_same_weights = (
+            it + 1 == iters_train
+            and ep + 1 < args.ep
+            and (ep + 1) % args.eval_freq == 0
+        )
+        if evaluation_due and not next_epoch_will_evaluate_same_weights:
+            completed_iteration = g_it + 1
+            eval_callback(
+                ep=ep,
+                global_iteration=completed_iteration,
+                evaluation_tag=(
+                    f"ep{ep:04d}-it{it + 1:06d}-g{completed_iteration:09d}"
+                ),
+            )
     # ============================================= iteration loop ends =============================================
     
     me.synchronize_between_processes()
     return {k: meter.global_avg for k, meter in me.meters.items()}, me.iter_time.time_preds(max_it - (g_it + 1) + (args.ep - ep) * 15)  # +15: other cost
 
 
-wait1 = os.path.join(os.path.expanduser('~'), 'wait1')
-def main():     # # 'pt_le_ft' in train_vae.py is the same as 'pt_le_ft' in train_gpt.py
-    if dist.is_local_master(): misc.os_system(f'touch {wait1}')
+def main():
     args: arg_util.Args = arg_util.init_dist_and_get_args()
     
     print("Available GPUs:", torch.cuda.device_count())
@@ -1550,11 +1323,7 @@ def main():     # # 'pt_le_ft' in train_vae.py is the same as 'pt_le_ft' in trai
     args.dump_log()
     if isinstance(sys.stdout, dist.BackupStreamToFile) and isinstance(sys.stderr, dist.BackupStreamToFile):
         sys.stdout.close(), sys.stderr.close()
-    if dist.is_local_master(): misc.os_system(f'rm -rf {wait1}')
-    # if args.vis and dist.is_visualizer():
-    #     misc.os_system(f'hdfs dfs -get {args.tb_log_dir_online}/* {args.tb_log_dir}/ >/dev/null 2>&1')  # 'cp -r {args.local_out_path}/* {args.bed}/' is done by lockable.py or launch.py
     dist.barrier()
-    time.sleep(120)
 
 
 if __name__ == '__main__':
@@ -1573,7 +1342,6 @@ if __name__ == '__main__':
             traceback.print_exc()
         raise _e
     finally:
-        misc.os_system(f'rm -rf {wait1}')
         dist.finalize()
         if isinstance(sys.stdout, dist.BackupStreamToFile) and isinstance(sys.stderr, dist.BackupStreamToFile):
             sys.stdout.close(), sys.stderr.close()

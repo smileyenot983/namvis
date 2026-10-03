@@ -120,30 +120,3 @@ def filter_params(model, ndim_dict, nowd_keys=(), lr_scale=0.0) -> Tuple[
     print(f"Info: {len(names_no_grad)} parameters are frozen (Expected with LoRA).")
     del ndim_dict
     return names, paras, list(para_groups.values())
-
-
-def plot():
-    import matplotlib.pyplot as plt
-    import torch.nn as nn
-    from torch.optim import SGD    
-    # for sche in ('lin', 'lin0', 'lin00', 'lin0.5', 'lin0.75'):
-    for sche in ('lin0', ):
-        op = SGD(nn.Linear(3, 4).parameters(), lr=1e-3)
-        it, lr = [], []
-        iters = 500
-        wp_it, max_it = 1 * iters, 10 * iters
-        for cur_it in range(max_it):
-            it.append(cur_it)
-            lr.append(lr_wd_annealing(sche, op, 0.1, 1e-5, 1e-5, cur_it, wp_it, max_it, wpe=0.3)[0])
-        
-        plt.figure()
-        plt.title(sche)
-        plt.plot(it, lr, 'b', label=sche)
-        plt.xlabel('it'), plt.ylabel('lr')
-        plt.legend()
-    
-    plt.savefig('lr.jpg')
-
-
-if __name__ == '__main__':
-    plot()

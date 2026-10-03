@@ -1,4 +1,3 @@
-
 import numpy as np
 import torch
 from PIL import Image
@@ -6,8 +5,37 @@ import io
 import random
 import json
 
-from infinity.dataset.dataset_multiview_iterable import transform_wintr
+from torchvision.transforms.functional import to_tensor
 from infinity.utils.dynamic_resolution import dynamic_resolution_h_w, h_div_w_templates
+
+
+def transform_wintr(pil_img, intr, tgt_h, tgt_w):
+    (width, height) = pil_img.size
+    if width / height <= tgt_w / tgt_h:
+        scale = tgt_w / width
+        resized_width = tgt_w
+        resized_height = int(tgt_w / (width / height))
+    else:
+        scale = tgt_h / height
+        resized_height = tgt_h
+        resized_width = int(width / height * tgt_h)
+    pil_img = pil_img.resize((resized_width, resized_height), resample=Image.LANCZOS)
+    arr = np.array(pil_img)
+    crop_y = (arr.shape[0] - tgt_h) // 2
+    crop_x = (arr.shape[1] - tgt_w) // 2
+    K = torch.as_tensor(intr, dtype=torch.float32).clone()
+    scale_x = resized_width / width
+    scale_y = resized_height / height
+    K[0, :] *= scale_x
+    K[1, :] *= scale_y
+    K[0, 2] -= crop_x
+    K[1, 2] -= crop_y
+    K[0, :] /= tgt_w
+    K[1, :] /= tgt_h
+    K[2, :] = torch.tensor([0.0, 0.0, 1.0])
+    new_intr = K
+    im = to_tensor(arr[crop_y:crop_y + tgt_h, crop_x:crop_x + tgt_w])
+    return (im.add(im).add_(-1), new_intr)
 
 
 def _training_view_counts(args):
@@ -106,7 +134,7 @@ def process_multiview_rgb(sample, args, is_eval=False, eval_dict=None):
             images.append(img_tensor)
             poses.append(pose)
             intrs.append(new_K)
-            texts.append(view_meta.get('text', '')) # Texts uncommented!
+            texts.append(view_meta.get('text', ''))
 
         poses = torch.stack(poses) 
         ref_c2w = poses[0] 
@@ -123,7 +151,7 @@ def process_multiview_rgb(sample, args, is_eval=False, eval_dict=None):
             "poses": poses_centered,  
             "intrs": torch.stack(intrs),
             "n_src": n_src,
-            "texts": texts # Texts uncommented!
+            "texts": texts
         }
 
     # --- EXACT VIEW SELECTION ---
@@ -160,7 +188,6 @@ def process_multiview_rgb(sample, args, is_eval=False, eval_dict=None):
 
     blender_to_opencv = torch.diag(torch.tensor([1,-1,-1], dtype=torch.float32))
     for view_id in chosen_views:
-        # view_meta = metadata[view_id]
         view_meta = frames_meta[view_id]
         
         # 1. Image Loading & RGBA Fix (White Background)
@@ -169,7 +196,7 @@ def process_multiview_rgb(sample, args, is_eval=False, eval_dict=None):
             img = Image.open(io.BytesIO(img_bytes))
             img.load()  # Force load to catch half-downloaded/truncated files
         except Exception as e:
-            print(f"Skipping corrupted scene {scene_key}: {e}") # Optional: uncomment to see how often it happens
+            print(f"Skipping corrupted scene {scene_key}: {e}")
             return None # The pipeline will drop this scene and grab the next one!
         
         if img.mode == 'RGBA':
@@ -182,9 +209,6 @@ def process_multiview_rgb(sample, args, is_eval=False, eval_dict=None):
         img_tensor, new_K = transform_wintr(img, view_meta['K'], tgt_h, tgt_w)
         
         # 2. Extract initial Poses (C2W)
-        # pose = torch.eye(4)
-        # pose[:3, :3] = torch.tensor(view_meta['R'])
-        # pose[:3, 3] = torch.tensor(view_meta['T'])
 
         #BY DEFAULT: BLENDER C2W
         pose = torch.tensor(view_meta['transform_matrix_original'], dtype=torch.float32)
@@ -194,7 +218,6 @@ def process_multiview_rgb(sample, args, is_eval=False, eval_dict=None):
         images.append(img_tensor)
         poses.append(pose)
         intrs.append(new_K)
-        # texts.append(view_meta['text'])
 
     poses = torch.stack(poses) # [N_views, 4, 4]
 
@@ -214,16 +237,12 @@ def process_multiview_rgb(sample, args, is_eval=False, eval_dict=None):
     scale = 1.0 / max_dist if max_dist > 1e-5 else 1.0
     poses_centered[:, :3, 3] *= scale
 
-    # print(f"poses_centered: {poses_centered}")
-    # print(f"np.linalg.norm(poses_centered[0][:3,3]): {np.linalg.norm(poses_centered[0][:3,3])}")
-    # print(f"np.linalg.norm(poses_centered[1][:3,3]): {np.linalg.norm(poses_centered[1][:3,3])}")
 
     return {
         "images": torch.stack(images),
         "poses": poses_centered,  # Replaces 'rots' and 'trans' 
         "intrs": torch.stack(intrs),
         "n_src": n_src
-        # "texts": texts 
     }
 
 
@@ -239,16 +258,13 @@ def collate_multiview_rgb(batched_list, args, is_eval=False):
         if is_eval:
             n_src = scene["n_src"]
         target_end = None if n_tgt is None else n_src + n_tgt
-        # n_src = scene["n_src"]
         b_img_src.append(scene["images"][:n_src])
         b_pose_src.append(scene["poses"][:n_src])
         b_intr_src.append(scene["intrs"][:n_src])
-        # b_txt_src.append(scene["texts"][:n_src]) 
 
         b_img_tgt.append(scene["images"][n_src:target_end])
         b_pose_tgt.append(scene["poses"][n_src:target_end])
         b_intr_tgt.append(scene["intrs"][n_src:target_end])
-        # b_txt_tgt.append(scene["texts"][n_src:])
 
     # Stack into [Batch, N_views, ...]
     image_src = torch.stack(b_img_src)
@@ -260,4 +276,3 @@ def collate_multiview_rgb(batched_list, args, is_eval=False):
     intr_tgt = torch.stack(b_intr_tgt)
 
     return (image_src, b_txt_src, pose_src, intr_src, image_tgt, b_txt_tgt, pose_tgt, intr_tgt)
-

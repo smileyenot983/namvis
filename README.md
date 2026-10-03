@@ -13,8 +13,8 @@ Peter Wonka, and Evgeny Burnaev.
 NAMVIS generates novel views at unseen camera poses from sparse posed source
 images. It predicts target-view image tokens from coarse to fine, with
 projective pose encoding at each scale and pooled and dense source-view
-conditioning. This repository includes training, inference, video generation,
-and evaluation on rendered multiview scenes.
+conditioning. This repository includes training, inference, and evaluation
+on rendered multiview scenes.
 
 ![NAMVIS architecture](docs/figures/architecture_clean.png)
 
@@ -82,9 +82,9 @@ export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"
 
 The PyTorch command follows the [official installation instructions for 2.5.1](https://pytorch.org/get-started/previous-versions/#v251).
 Both installation methods use [docker/requirements.txt](docker/requirements.txt).
-Its package versions are pinned from the running NAMVIS container (Python
-3.10.12); PyTorch, torchvision, and FlashAttention are installed separately
-at the versions shown above.
+Its required packages and selected compatibility versions are pinned from the
+running NAMVIS container (Python 3.10.12); PyTorch, torchvision, and
+FlashAttention are installed separately at the versions shown above.
 The examples use image conditioning and do not require CLIP.
 
 ## Checkpoints
@@ -186,6 +186,7 @@ Before launching, edit `data_path` in
 shards. It accepts comma-separated directories or shard paths. Update
 `--train_scenes` to the scene count for your training data, and adjust the
 batch size and worker settings for your hardware.
+Training requires at least one DataLoader worker (`--workers >= 1`).
 
 ```bash
 NPROC_PER_NODE=1 RUN_NAME=namvis_1b \
@@ -208,6 +209,11 @@ Training writes checkpoints to `checkpoints/<RUN_NAME>/`, logs to
 `outputs_<RUN_NAME>/evaluation/`. Trackio logs are stored in `trackio_logs/`.
 See [data_eval/README.md](data_eval/README.md) for evaluation selections and
 frequency settings.
+
+`--save_model_iters_freq` sets the checkpoint interval in training iterations.
+With gradient accumulation, saves wait until the next completed optimizer
+update. Auto-resume restores full `*-last.pth` checkpoints; weights-only exports
+are used through `--rush_resume` to initialize a new run.
 
 ## Acknowledgements
 

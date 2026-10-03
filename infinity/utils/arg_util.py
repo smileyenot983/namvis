@@ -2,7 +2,6 @@ import json
 import math
 import os
 import random
-import subprocess
 import sys
 import time
 from collections import OrderedDict, deque
@@ -42,11 +41,6 @@ class Args(Tap):
     seed: int = None                    # 3407
     rand: bool = True                   # actual seed = seed + (dist.get_rank()*512 if rand else 0)
     device: str = 'cpu'
-    task_id: str = '2493513'
-    trial_id: str = '7260554'
-    robust_run_id: str = '00'
-    ckpt_trials = []
-    real_trial_id: str = '7260552'
     chunk_nodes: int = None
     is_master_node: bool = None
     # dir
@@ -114,7 +108,7 @@ class Args(Tap):
     log_freq: int = 50                  # log frequency in the stdout
     gclip: float = 6.                   # <=0 for not grad clip VAE
     dclip: float = 6.                   # <=0 for not grad clip discriminator
-    tclip: float = 2.                   # <=0 for not grad clip GPT; >100 for per-param clip (%= 100 automatically)
+    tclip: float = 2.                   # <=0 for not grad clip GPT; >100 for per-param clip (%%= 100 automatically)
     cdec: bool = False                  # decay the grad clip thresholds of GPT and GPT's word embed
     opt: str = 'adamw'                  # lion: https://cloud.tencent.com/developer/article/2336657?areaId=106001 lr=5e-5（比Adam学习率低四倍）和wd=0.8（比Adam高八倍）；比如在小的 batch_size 时，Lion 的表现不如 AdamW
     ada: str = ''                       # adam's beta0 and beta1 for VAE or GPT, '0_0.99' from style-swin and magvit, '0.5_0.9' from VQGAN
@@ -127,7 +121,7 @@ class Args(Tap):
     patch_size: int = None              # [automatically set; don't specify this] = 2 ** (len(args.scale_schedule) - 1)
     resos: tuple = None                 # [automatically set; don't specify this]
     data_load_reso: int = None          # [automatically set; don't specify this]
-    workers: int = 0                    # num workers; 0: auto, -1: don't use multiprocessing in DataLoader
+    workers: int = 1                    # DataLoader workers; must be at least 1
     lbs: int = 0                        # local batch size; if lbs != 0, bs will be ignored, and will be reset as round(args.lbs / args.ac) * dist.get_world_size()
     bs: int = 0                         # global batch size; if lbs != 0, bs will be ignored
     batch_size: int = 0                 # [automatically set; don't specify this] batch size per GPU = round(args.bs / args.ac / dist.get_world_size())
@@ -159,7 +153,6 @@ class Args(Tap):
     model_init_device: str = 'cuda'     # model_init_device
     prefetch_factor: int = 2            # prefetch_factor for dataset
     apply_spatial_patchify: int = 0     # apply apply_spatial_patchify or not
-    debug_bsc: int = 0                  # save figs and set breakpoint for debug bsc and check input
     task_type: str = 't2i'              # take type to t2i or t2v
 
     # arguments related to multiview:
@@ -348,7 +341,6 @@ class Args(Tap):
         if not dist.is_local_master():
             return
         nd = {'is_master': dist.is_visualizer()}
-        r_trial, trial = str(self.real_trial_id), str(self.trial_id)
         for k, v in {
             # 'name': self.exp_name, 'tag': self.tag, 'cmd': self.cmd, 'commit': self.commit_id, 'branch': self.branch,
             'Lnll': self.last_Lnll, 'L1': self.last_L1,
@@ -370,8 +362,6 @@ class Args(Tap):
             if hasattr(v, 'item'):v = v.item()
             if v is None or (isinstance(v, str) and len(v) == 0): continue
             nd[k] = v
-        if r_trial == trial:
-            nd.pop('trial', None)
         
         with open(self.log_txt_path, 'w') as fp:
             json.dump(nd, fp, indent=2)
@@ -425,6 +415,12 @@ def init_dist_and_get_args():
             del sys.argv[i]
             break
     args = Args(explicit_bool=True).parse_args(known_only=True)
+    if args.workers < 1:
+        raise ValueError('--workers must be at least 1 for WebDataset training')
+    if args.ac < 1:
+        raise ValueError('--ac must be at least 1')
+    if args.save_model_iters_freq < 1:
+        raise ValueError('--save_model_iters_freq must be greater than 0')
     args.chunk_nodes = int(os.environ.get('CK', '') or '0')
     
     if len(args.extra_args) > 0 and args.is_master_node == 0:
@@ -514,18 +510,7 @@ def init_dist_and_get_args():
 
     print(f"args.model: {args.model}")
     
-    args.task_id = '123'
-    args.trial_id = '123'
-    args.robust_run_id = '0'
     args.log_txt_path = os.path.join(args.local_out_path, 'log.txt')
-    
-    ls = '[]'
-    if 'AUTO_RESUME' in os.environ:
-        ls.append(int(os.environ['AUTO_RESUME']))
-    ls = sorted(ls, reverse=True)
-    ls = [str(i) for i in ls]
-    args.ckpt_trials = ls
-    args.real_trial_id = args.trial_id if len(ls) == 0 else str(ls[-1])
     
     args.enable_checkpointing = None if args.enable_checkpointing in [False, 0, "0"] else args.enable_checkpointing
     args.enable_checkpointing = "full-block" if args.enable_checkpointing in [True, 1, "1"] else args.enable_checkpointing

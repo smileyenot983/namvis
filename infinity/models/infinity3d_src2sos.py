@@ -4,7 +4,6 @@ Definition of Infinity transformer model.
 
 import math
 import random
-import time
 from contextlib import nullcontext
 from functools import partial
 from typing import List, Optional, Tuple, Union, Dict, Any
@@ -14,14 +13,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from timm.models import register_model
-from torch.utils.checkpoint import checkpoint
-from PIL import Image
 import numpy as np
 
 import infinity.utils.dist as dist
 from infinity.utils.dist import for_visualize
-from infinity.models.basic import flash_attn_func, flash_fused_op_installed, AdaLNBeforeHead, CrossAttnBlock, SelfAttnBlock, CrossAttention, FastRMSNorm, precompute_rope2d_freqs_grid
-from infinity.utils import misc
+from infinity.models.basic import flash_attn_func, flash_fused_op_installed, AdaLNBeforeHead, CrossAttnBlock, SelfAttnBlock, CrossAttention, FastRMSNorm
 from infinity.models.flex_attn import FlexAttn
 from infinity.utils.dynamic_resolution import dynamic_resolution_h_w, h_div_w_templates
 
@@ -1133,7 +1129,6 @@ class Infinity3DSrc2Sos(nn.Module):
                 ray_start = ray_end
                 last_stage = torch.cat(last_stage_posed, dim=1).reshape(bs,N_views*token_count_i,-1)
 
-            
 
         for blocks in block_groups:
             for block in blocks:
@@ -1159,276 +1154,6 @@ class Infinity3DSrc2Sos(nn.Module):
         return ret, idx_Bl_list, img, codes_list
 
 
-    @torch.no_grad()
-    def autoregressive_infer_fake(
-        self,
-        vae_features_src, # [B, N_views_src, 256, H//16, W//16]
-        x_BLC_wo_prefix_tgt,
-        vae=None,
-        scale_schedule=None,
-        label_B_or_BLT=None,
-        rays=None, # tensor. rays[i]: [B,N_views_tgt, N_tokens_scale, 6]
-        poses=None,
-        intrs=None,
-        N_views=1,
-        input_size=None,
-        B=1, negative_label_B_or_BLT=None, force_gt_Bhw=None,
-        g_seed=None, cfg_list=[], tau_list=[], cfg_sc=3, top_k=0, top_p=0.0,
-        returns_vemb=0, ratio_Bl1=None, gumbel=0, norm_cfg=False,
-        cfg_exp_k: float=0.0, cfg_insertion_layer=[-5],
-        vae_type=0, softmax_merge_topk=-1, ret_img=False,
-        trunk_scale=1000,
-        gt_leak=0, gt_ls_Bl=None,
-        inference_mode=False,
-        save_img_path=None,
-        sampling_per_bits=1,
-    ):   # returns List[idx_Bl]
-        if g_seed is None: rng = None
-        else: self.rng.manual_seed(g_seed); rng = self.rng
-        # assert len(cfg_list) >= len(scale_schedule)
-        # assert len(tau_list) >= len(scale_schedule)
-
-        # scale_schedule is used by infinity, vae_scale_schedule is used by vae if there exists a spatial patchify, 
-        # we need to convert scale_schedule to vae_scale_schedule by multiply 2 to h and w
-        if self.apply_spatial_patchify:
-            vae_scale_schedule = [(pt, 2*ph, 2*pw) for pt, ph, pw in scale_schedule]
-        else:
-            vae_scale_schedule = scale_schedule
-
-        # print(f"[infer] vae_features_src: {vae_features_src}")
-        vae_features_src = vae_features_src.permute(0,2,3,1).reshape(B,-1,32)
-        vae_features_src = self.img_norm(vae_features_src)
-        # print(f"[infer+norm] vae_features_src: {vae_features_src}")
-        kv_embed = self.img_proj_for_ca(vae_features_src)
-
-        kv_compact = kv_embed.reshape(-1, self.D).contiguous()
-        L_src = vae_features_src.shape[1]
-        cu_seqlens_k = torch.arange(0, (B+1)*L_src, step=L_src, dtype=torch.int32, device=kv_compact.device)
-        max_seqlen_k = L_src
-        ca_kv = kv_compact, cu_seqlens_k, max_seqlen_k
-
-        sos = cond_BD = self.img_proj_for_sos(vae_features_src)
-        with torch.amp.autocast('cuda', enabled=False):
-            cond_BD_or_gss = self.shared_ada_lin(cond_BD.float()).float().contiguous()
-
-        # sos.shape: torch.Size([1, 1, 2048])
-        sos = sos.unsqueeze(1).expand(B, 1, -1) + self.pos_start.expand(B, 1, -1)
-
-        # print(f"[eval] x_BLC_wo_prefix_tgt.shape: {x_BLC_wo_prefix_tgt.shape}")
-        token_schedule = [scale_i[0]*scale_i[1]*scale_i[2] for scale_i in scale_schedule]
-        x_BLC = []
-
-        print(f"[infer fake] sos[0,0,:20]: {sos[0,0,:20]}")
-
-        for v in range(N_views):
-            x_BLC.append(sos)
-
-        start = 0
-        for idx, n_tokens_i in enumerate(token_schedule):
-            # first idx not used, instead 'sos' is used
-            if idx==0:
-                continue
-            end = start + n_tokens_i
-            # print(f"start: {start} | end: {end}")
-            for v in range(N_views):
-
-                # cat together prefix and raymaps
-                # x_BLC_posed: [B, N_tokens, 32+6]
-                x_BLC_posed = torch.cat((self.norm0_ve(x_BLC_wo_prefix_tgt[:,v, start:end]),
-                                        rays[:,v,start:end]), 
-                                        dim=-1)
-
-                # if idx==1 and v==0:
-                #     print(f"x_BLC_posed: {x_BLC_posed}")
-                
-                # 32+6 -> 2048                        
-                x_BLC_posed = self.word_embed(x_BLC_posed)
-                x_BLC.append(x_BLC_posed)
-
-            start = end
-
-        # [B, N_views*521, 2048]
-        x_BLC = torch.cat(x_BLC, dim=1)
-
-        
-
-        l_end = x_BLC.shape[1] // N_views
-        d: torch.Tensor = torch.cat([torch.full((pn[0]*pn[1]*pn[2],), i) for i, pn in enumerate(scale_schedule)]).view(1, l_end, 1)
-        # print(f"d.shape: {d.shape}")
-        # print(f"d: {d}")
-        l_end_nviews = l_end * N_views
-        d = d.repeat_interleave(N_views).view(1, l_end_nviews, 1)
-        # print(f"d: {d}")
-        need_to_pad = (l_end + self.pad_to_multiplier - 1) // self.pad_to_multiplier * self.pad_to_multiplier - l_end # 0
-    
-        dT = d.transpose(1, 2)    # dT: 11L
-        attn_bias_for_masking = torch.where(d >= dT, 0., -torch.inf).reshape(1, 1, l_end_nviews, l_end_nviews)
-        attn_bias = attn_bias_for_masking[:, :, :l_end_nviews, :l_end_nviews].contiguous()   # attn_bias: 11LL
-        attn_bias_or_two_vector = attn_bias.type_as(x_BLC).to(x_BLC.device)
-
-        SelfAttnBlock.forward, CrossAttnBlock.forward
-        checkpointing_full_block = self.checkpointing == 'full-block' and self.training
-        # by default != 1
-        if self.num_block_chunks == 1:
-            for i, b in enumerate(self.blocks):
-                if self.add_lvl_embeding_only_first_block and i == 0:
-                    x_BLC = self.add_lvl_embeding_for_x_BLC(x_BLC, scale_schedule, need_to_pad, N_views)
-                if not self.add_lvl_embeding_only_first_block:
-                    x_BLC = self.add_lvl_embeding_for_x_BLC(x_BLC, scale_schedule, need_to_pad, N_views)
-                if checkpointing_full_block:
-                    x_BLC = torch.utils.checkpoint.checkpoint(b, x_BLC, cond_BD_or_gss, ca_kv, attn_bias_or_two_vector, attn_fn, scale_schedule, self.rope2d_freqs_grid, use_reentrant=False)
-                else:
-                    x_BLC = b(x=x_BLC, cond_BD=cond_BD_or_gss, ca_kv=ca_kv, attn_bias_or_two_vector=attn_bias_or_two_vector, attn_fn=attn_fn, scale_schedule=scale_schedule, rope2d_freqs_grid=self.rope2d_freqs_grid)
-        else:
-            for i, chunk in enumerate(self.block_chunks): # this path
-                if self.add_lvl_embeding_only_first_block and i == 0:
-                    x_BLC = self.add_lvl_embeding_for_x_BLC(x_BLC, scale_schedule, need_to_pad, N_views)
-                if not self.add_lvl_embeding_only_first_block:
-                    x_BLC = self.add_lvl_embeding_for_x_BLC(x_BLC, scale_schedule, need_to_pad, N_views)
-
-                
-
-                # [B, N_views*n_tokens_per_view, 2048]
-                x_BLC = chunk(x=x_BLC, 
-                              cond_BD=cond_BD_or_gss, 
-                              ca_kv=ca_kv, #reference vae feats
-                              attn_bias_or_two_vector=attn_bias_or_two_vector, 
-                              attn_fn=None,
-                              scale_schedule=scale_schedule, 
-                              checkpointing_full_block=checkpointing_full_block, 
-                              rope2d_freqs_grid=self.rope2d_freqs_grid)
-
-
-        print(f"[inf fake out] x_BLC[0,:12,0]: {x_BLC[0,:12,0]}")
-        # print(f"[eval out] x_BLC.shape: {x_BLC.shape}")
-
-        logits = self.get_logits(x_BLC[:, :l_end_nviews], cond_BD)
-
-        print(f"logits[0,:20,:5]: {logits[0,:20,:5]}")
-
-        print(f"logits.shape: {logits.shape}")
-        idx_Bld_list = []
-        num_stages_minus_1 = len(scale_schedule)-1
-        summed_codes = 0
-        
-
-        logits0 = []
-        logits1 = []
-
-
-        pn_start1 = 0
-        pn_start2 = logits.shape[1]//2
-        for si, pn in enumerate(scale_schedule):
-            
-            n_tokens_i = pn[0]*pn[1]*pn[2]
-            logits_BlV0 = logits[:, pn_start1:pn_start1+n_tokens_i]
-            logits_BlV1 = logits[:, pn_start2:pn_start2+n_tokens_i]
-
-            print(f"pn_start1: {pn_start1} | pn_start2: {pn_start2}")
-
-
-            logits0.append(logits_BlV0)
-            logits1.append(logits_BlV1)
-
-
-            pn_start1 = pn_start1+n_tokens_i
-            pn_start2 = pn_start2+n_tokens_i
-
-
-        pn_start = 0
-        pn_end = 0
-        N_views=1
-        for si, pn in enumerate(scale_schedule):   # si: i-th segment
-
-            # pn_end = pn_start + pn[0]*pn[1]*pn[2]
-            # logits_BlV = logits[:,pn_start:pn_end,:]
-            # print(f"[inside]pn_start: {pn_start} | pn_end: {pn_end}")
-            # print(f"logits_BlV.shape: {logits_BlV.shape}")
-            # pn_start = pn_start + N_views*pn[0]*pn[1]*pn[2]
-
-            logits_BlV = logits1[si]
-
-            # idx_Bld: [B*N_views, N_tokens_scale, 32] 
-            if self.use_bit_label:
-                tmp_bs, tmp_seq_len = logits_BlV.shape[:2]
-                logits_BlV = logits_BlV.reshape(tmp_bs, -1, 2)
-                print(f"[sampling]logits_BlV.shape: {logits_BlV.shape}")
-                idx_Bld = sample_with_top_k_top_p_also_inplace_modifying_logits_(logits_BlV, rng=rng, top_k=top_k or self.top_k, top_p=top_p or self.top_p, num_samples=1)[:, :, 0]
-                idx_Bld = idx_Bld.reshape(tmp_bs, tmp_seq_len, -1)
-            else:
-                idx_Bl = sample_with_top_k_top_p_also_inplace_modifying_logits_(logits_BlV, rng=rng, top_k=top_k or self.top_k, top_p=top_p or self.top_p, num_samples=1)[:, :, 0]
-            
-            print(f"[infer]idx_Bld.shape: {idx_Bld.shape}")
-
-            print(f"vae_type: {vae_type} | gt_leak: {gt_leak}")
-            # by default vae_type!=0
-            if vae_type != 0:
-                assert returns_vemb
-                #default: gt_leak=-1
-                if si < gt_leak: 
-                    idx_Bld = gt_ls_Bl[si]
-                else:
-                    assert pn[0] == 1
-                    idx_Bld = idx_Bld.reshape(B*N_views, pn[1], pn[2], -1) # shape: [B, h, w, d] or [B, h, w, 4d]
-                    
-                    print(f"[infer reshape]idx_Bld.shape: {idx_Bld.shape}")
-
-                    #default: self.apply_spatial_patchify=False
-                    if self.apply_spatial_patchify: # unpatchify operation
-                        idx_Bld = idx_Bld.permute(0,3,1,2) # [B, 4d, h, w]
-                        idx_Bld = torch.nn.functional.pixel_shuffle(idx_Bld, 2) # [B, d, 2h, 2w]
-                        idx_Bld = idx_Bld.permute(0,2,3,1) # [B, 2h, 2w, d]
-                    idx_Bld = idx_Bld.unsqueeze(1) # [B, 1, h, w, d] or [B, 1, 2h, 2w, d]
-                # print(f"idx_Bld.shape: {idx_Bld.shape}")
-                idx_Bld_list.append(idx_Bld)
-                codes = vae.quantizer.lfq.indices_to_codes(idx_Bld, label_type='bit_label') # [B, d, 1, h, w] or [B, d, 1, 2h, 2w]
-                print(f"[infer] codes.shape: {codes.shape}")
-                if si != num_stages_minus_1:
-                    summed_codes += F.interpolate(codes, size=vae_scale_schedule[-1], mode=vae.quantizer.z_interplote_up)
-                    last_stage = F.interpolate(summed_codes, size=vae_scale_schedule[si+1], mode=vae.quantizer.z_interplote_up) # [B, d, 1, h, w] or [B, d, 1, 2h, 2w]
-                    # [B, 32, 1, n_tokens_height, n_tokens_width]
-                    last_stage = last_stage.squeeze(-3) # [B, d, h, w] or [B, d, 2h, 2w]
-                    # print(f"squeeze last_stage.shape: {last_stage.shape}")
-                    if self.apply_spatial_patchify: # patchify operation(default False)
-                        last_stage = torch.nn.functional.pixel_unshuffle(last_stage, 2) # [B, 4d, h, w]
-                    last_stage = last_stage.reshape(*last_stage.shape[:2], -1) # [B, d, h*w] or [B, 4d, h*w]
-                    last_stage = torch.permute(last_stage, [0,2,1]) # [B, h*w, d] or [B, h*w, 4d]
-                else:
-                    summed_codes += codes
-                # print(f"summed_codes.shape: {summed_codes.shape}")
-            else:
-                if si < gt_leak:
-                    idx_Bl = gt_ls_Bl[si]
-                h_BChw = self.quant_only_used_in_inference[0].embedding(idx_Bl).float()   # BlC
-
-                # h_BChw = h_BChw.float().transpose_(1, 2).reshape(B, self.d_vae, scale_schedule[si][0], scale_schedule[si][1])
-                h_BChw = h_BChw.transpose_(1, 2).reshape(B, self.d_vae, scale_schedule[si][0], scale_schedule[si][1], scale_schedule[si][2])
-                ret.append(h_BChw if returns_vemb != 0 else idx_Bl)
-                idx_Bl_list.append(idx_Bl)
-                if si != num_stages_minus_1:
-                    accu_BChw, last_stage = self.quant_only_used_in_inference[0].one_step_fuse(si, num_stages_minus_1+1, accu_BChw, h_BChw, scale_schedule)
-            
-        if inference_mode:
-            for b in self.unregistered_blocks: (b.sa if isinstance(b, CrossAttnBlock) else b.attn).kv_caching(False)
-        else:
-            assert self.num_block_chunks > 1
-            for block_chunk_ in self.block_chunks:
-                for module in block_chunk_.module.module:
-                    (module.sa if isinstance(module, CrossAttnBlock) else module.attn).kv_caching(False)
-
-        if not ret_img:
-            return ret, idx_Bl_list, []
-        
-        if vae_type != 0:
-            img = vae.decode(summed_codes.squeeze(-3)) # [B*N_views, 32, 16, 16]
-        else:
-            img = vae.viz_from_ms_h_BChw(ret, scale_schedule=scale_schedule, same_shape=True, last_one=True)
-
-        img = (img + 1) / 2
-        img = img.permute(0, 2, 3, 1).mul_(255).to(torch.uint8).flip(dims=(3,))
-
-        return None, None, img
-    
     @for_visualize
     def vis_key_params(self, ep):
         return

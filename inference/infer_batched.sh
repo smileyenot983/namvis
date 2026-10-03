@@ -29,10 +29,10 @@ TGT_MASTER_INDICES=(1 2 4 5 6)
 SRC_OFFSET=2
 
 # Outer loop for source views
-for (( src=1; src<=MAX_VIEWS_SRC; src++ )); do
+for (( src=3; src<=MAX_VIEWS_SRC; src++ )); do
 
     # Inner loop for target views
-    for (( tgt=1; tgt<=MAX_VIEWS_TGT; tgt++ )); do
+    for (( tgt=3; tgt<=MAX_VIEWS_TGT; tgt++ )); do
         
         echo "=================================================="
         echo "Running inference with N_views_src=${src} and N_views_tgt=${tgt}"

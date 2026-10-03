@@ -1,25 +1,15 @@
 import torch
 import os.path as osp
 import os
-import argparse
 import time
-from PIL import Image
-import math
-from transformers import AutoTokenizer, T5EncoderModel, T5TokenizerFast
-from torch.cuda.amp import autocast
 import cv2
 import json # FIXED: JSON import added to the top!
 
-from infinity.utils.dynamic_resolution import dynamic_resolution_h_w, h_div_w_templates
 from infinity.models.infinity3d_src2sos import Infinity3DSrc2Sos
-from infinity.dataset.dataset_multiview_iterable import MultiviewIterableDataset
-from infinity.models.basic import CrossAttnBlock
-from inference.vis_utils import *
 
 os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
 
 # from natsort import natsorted
-from glob import glob
 import numpy as np
 from PIL import Image as PImage
 from torchvision.transforms.functional import to_tensor
@@ -71,6 +61,8 @@ def transform_wintr(pil_img, intr, tgt_h, tgt_w):
     intr[0,2] = (scale*intr[0,2] - crop_x) 
     intr[1,2] = (scale*intr[1,2] - crop_y) 
 
+    # NAMVIS was trained on one dataset with placeholder intrinsics.
+    # Preserve that convention when using its released checkpoint.
     new_intr = torch.tensor([[1.0, 0.0, 0.5],
                              [0.0, 1.0, 0.5],
                              [0.0, 0.0, 1.0]])
@@ -141,7 +133,7 @@ def load_scene(scene_path, tgt_h=256, tgt_w=256, requested_indices=None, use_dep
     alpha = None
 
     if use_camera_distance_norm:
-        # Match MultiviewIterableDataset.normalize_scene_batches.
+        # Match training: normalize selected cameras relative to the first source.
         max_distance = max(
             float(np.linalg.norm((w2c_0 @ (np.array(frames[idx]['transform_matrix'], dtype=np.float32) @ blender2cv))[:3, 3]))
             for idx in requested_indices

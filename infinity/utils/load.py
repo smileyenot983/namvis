@@ -1,21 +1,10 @@
 #!/usr/bin/python3
-import gc
-import os
-import os.path as osp
-import random
-import sys
-from copy import deepcopy
-from typing import Tuple, Union
 
-import colorama
 import torch
-import yaml
 
-import infinity.utils.dist as dist
 
 from infinity.models.ema import get_ema_model
-from infinity.utils import arg_util, misc
-from infinity.utils.misc import os_system
+from infinity.utils import arg_util
 
 
 def build_vae_gpt(args: arg_util.Args,
@@ -121,6 +110,3 @@ def build_vae_gpt(args: arg_util.Args,
     assert all(p.requires_grad for n, p in gpt_wo_ddp.named_parameters())
     
     return vae_local, gpt_wo_ddp, gpt_wo_ddp_ema
-
-if __name__ == '__main__':
-    ld(sys.argv[1])

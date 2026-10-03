@@ -48,9 +48,3 @@ RUN groupadd -g ${GID} ramil && \
 USER ramil
 
 WORKDIR /workspace
-
-
-# to install smth as root from inside container:
-# docker exec -u root -it rkhafizov.infinity_container bash
-# python3 -m pip install some-package
-# python -m pip install -U trackio huggingface_hub

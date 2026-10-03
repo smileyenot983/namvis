@@ -6,7 +6,6 @@ import numpy as np
 from PIL import Image
 from torch.cuda.amp import autocast
 import torchvision
-import torch.nn.functional as F
 import json # FIXED: JSON import added to the top!
 
 # Ensure this matches the name of the helper script above!

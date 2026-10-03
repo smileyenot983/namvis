@@ -55,9 +55,8 @@ class CKPTSaver(object):
         last_save_time, cur_time = self.time_stamp.cpu().tolist()
         
         auto_save = cur_time - last_save_time > 20 * 60
-        need_save = also_save_to is not None or best_save_to is not None or next_ep == args.ep or auto_save
-        if not need_save:
-            return
+        # Every explicit request writes a checkpoint. The timer only limits
+        # copying checkpoints and logs to the backup directory below.
         
         if acc_str is not None: self.acc_str = acc_str
         if eval_milestone is not None: self.eval_milestone = eval_milestone
@@ -145,7 +144,10 @@ def auto_resume(args: arg_util.Args, pattern='ckpt*.pth') -> Tuple[List[str], in
     resume = ''
     if args.auto_resume:
         for dd in (args.local_out_path, args.bed):
-            all_ckpt = glob_with_epoch_iter(os.path.join(dd, pattern))
+            all_ckpt = [
+                path for path in glob_with_epoch_iter(os.path.join(dd, pattern))
+                if os.path.basename(path).endswith('-last.pth')
+            ]
             if len(all_ckpt): break
         if len(all_ckpt) == 0:
             info.append(f'[auto_resume] no ckpt found @ {pattern}')

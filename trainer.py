@@ -1,34 +1,26 @@
-import random
 import time
-import gc
-from functools import partial
 from pprint import pformat
 from typing import List, Optional, Tuple, Union
-import os.path as osp
 
-import seaborn as sns
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint as checkpoint
-from matplotlib.colors import ListedColormap
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp.api import FullOptimStateDictConfig, FullStateDictConfig, StateDictType
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 import numpy as np
 import torch.distributed as tdist
-from torch.amp import autocast
-import cv2
 
 import infinity.utils.dist as dist
 from infinity.models import Infinity3DSrc2Sos
 from infinity.models.ema import update_ema
 from infinity.models.bitwise_self_correction import BitwiseSelfCorrection, sample_schedule_severity
-from infinity.utils import arg_util, misc, wandb_utils
+from infinity.utils import arg_util, misc
 from infinity.utils.amp_opt import AmpOptimizer
 from infinity.utils.dynamic_resolution import dynamic_resolution_h_w
-from infinity.utils.rays import plucker_rays_batched, plucker_rays_seva, plucker_rays_paired
+from infinity.utils.rays import plucker_rays_paired
 
 # from prope.torch import _invert_SE3
 
@@ -304,7 +296,6 @@ class InfinityTrainer(object):
         else:
             self.loss_eq_weight = 1.
         
-        self.cmap_sim: ListedColormap = sns.color_palette('viridis', as_cmap=True)
         
         self.prog_it = 0
         self.last_prog_si = -1
